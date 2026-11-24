@@ -1,0 +1,3 @@
+/home/jose/Desktop/UPS/vision-por-computadora/proyecto_integrador_p1/desktop/build/CMakeFiles/plumilla_desktop.dir
+/home/jose/Desktop/UPS/vision-por-computadora/proyecto_integrador_p1/desktop/build/CMakeFiles/edit_cache.dir
+/home/jose/Desktop/UPS/vision-por-computadora/proyecto_integrador_p1/desktop/build/CMakeFiles/rebuild_cache.dir

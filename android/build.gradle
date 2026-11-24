@@ -1,0 +1,7 @@
+// Archivo raíz. El módulo :opencv del SDK usa el plugin de Kotlin,
+// por eso se declara aquí aunque la app esté en Java.
+plugins {
+    id 'com.android.application' version '8.5.2' apply false
+    id 'com.android.library' version '8.5.2' apply false
+    id 'org.jetbrains.kotlin.android' version '1.9.24' apply false
+}

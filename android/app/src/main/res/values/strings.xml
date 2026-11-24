@@ -1,0 +1,16 @@
+<resources>
+    <string-array name="modos">
+        <item>CPU (cv::Mat)</item>
+        <item>GPU OpenCL (cv::UMat)</item>
+        <item>Ambos (comparativa)</item>
+    </string-array>
+    <string-array name="etapas">
+        <item>Original</item>
+        <item>Ecualizada</item>
+        <item>Bilateral</item>
+        <item>Contorno</item>
+        <item>Difusión (kernel propio)</item>
+        <item>Posterizada</item>
+        <item>Final</item>
+    </string-array>
+</resources>

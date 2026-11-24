@@ -1,0 +1,13 @@
+pluginManagement {
+    repositories { google(); mavenCentral(); gradlePluginPortal() }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories { google(); mavenCentral() }
+}
+rootProject.name = 'Plumilla'
+include ':app'
+
+// Módulo Java de OpenCV tomado del Android SDK oficial (opencv.org/releases)
+include ':opencv'
+project(':opencv').projectDir = new File(opencvsdk + '/sdk')

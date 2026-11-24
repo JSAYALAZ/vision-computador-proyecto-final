@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:opencv="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000">
+
+    <org.opencv.android.JavaCamera2View
+        android:id="@+id/camera_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        opencv:camera_id="any"
+        opencv:show_fps="true" />
+
+    <!-- Métricas arriba a la izquierda -->
+    <TextView
+        android:id="@+id/txt_metrics"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:layout_marginTop="40dp"
+        android:background="#AA000000"
+        android:padding="6dp"
+        android:textColor="#FFFFFF"
+        android:textSize="13sp"
+        android:fontFamily="monospace" />
+
+    <!-- Panel de controles a la derecha -->
+    <ScrollView
+        android:layout_width="230dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="end"
+        android:background="#AA000000">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="8dp">
+
+            <Spinner android:id="@+id/sp_mode" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:entries="@array/modos" />
+            <Spinner android:id="@+id/sp_stage" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:entries="@array/etapas" />
+            <androidx.appcompat.widget.SwitchCompat android:id="@+id/sw_split"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="Original | Efecto" android:textColor="#FFFFFF" android:checked="true" />
+
+            <TextView android:id="@+id/lbl_kernel" style="@style/Lbl" />
+            <SeekBar android:id="@+id/sb_kernel" style="@style/Sb" android:max="61" android:progress="15" />
+            <TextView android:id="@+id/lbl_bil" style="@style/Lbl" />
+            <SeekBar android:id="@+id/sb_bil" style="@style/Sb" android:max="31" android:progress="9" />
+            <TextView android:id="@+id/lbl_edge" style="@style/Lbl" />
+            <SeekBar android:id="@+id/sb_edge" style="@style/Sb" android:max="150" android:progress="45" />
+            <TextView android:id="@+id/lbl_space" style="@style/Lbl" />
+            <SeekBar android:id="@+id/sb_space" style="@style/Sb" android:max="8" android:progress="4" />
+            <TextView android:id="@+id/lbl_morph" style="@style/Lbl" />
+            <SeekBar android:id="@+id/sb_morph" style="@style/Sb" android:max="9" android:progress="3" />
+        </LinearLayout>
+    </ScrollView>
+</FrameLayout>
