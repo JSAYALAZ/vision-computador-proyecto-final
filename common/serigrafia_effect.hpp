@@ -14,12 +14,14 @@
 //  pantalla, y encima una pantalla negra con el contorno. Se imita así:
 //   1. Ecualización de histograma en la luminancia Y (YCrCb)  [Estadística]
 //   2. Filtro bilateral a color                               [Suavizado]
-//   3. Mediana + Laplaciano + umbral -> contornos             [Cálculo]
-//   4. Morfología: cierre + apertura + dilatación             (contorno de tinta)
-//   5. FILTRO PROPIO: kernel radial de coseno alzado (Hann) con cv::filter2D,
+//   3. FILTRO PROPIO: kernel radial de coseno alzado (Hann) con cv::filter2D,
 //      "difusión de tinta" que simplifica las formas antes de cuantizar
-//   6. Saturación pop (LUT sobre el canal S de HSV) + posterización por canal
-//      (LUT de cuantización) + contorno negro con máscara (manipulación de píxeles)
+//   4. Limpieza fuerte del tono: mediana + apertura/cierre en gris (manchas limpias)
+//   5. Cuantización a n niveles (LUT)
+//   6. Laplaciano + umbral sobre las manchas -> contorno entre tintas  [Cálculo]
+//   7. Morfología: cierre + apertura + dilatación             (contorno de tinta)
+//   8. PALETA FIJA de alto contraste en una sola LUT + contorno negro con
+//      máscara (manipulación de píxeles)
 // =============================================================================
 #pragma once
 
@@ -27,6 +29,7 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/core/ocl.hpp>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <vector>
 
@@ -42,8 +45,8 @@ struct Params {
     int kernelK           = 15;    // tamaño del kernel propio (impar) -> "saturar" carga
     int edgeThresh        = 45;    // umbral sobre |Laplaciano|
     int morphK            = 3;     // grosor del contorno (elemento estructurante)
-    int colorLevels       = 4;     // tintas por canal (2..8) -> hasta niveles³ colores
-    double saturation     = 1.8;   // factor de saturación "pop"
+    int colorLevels       = 4;     // número de tintas de la paleta (2..8)
+    int cleanK            = 5;     // limpieza del tono: mediana + apertura/cierre (px)
     double eqStrength     = 0.5;   // 0 = sin ecualizar, 1 = ecualización completa
 };
 
@@ -60,7 +63,7 @@ enum Stage {
 
 inline const char* stageName(int s) {
     static const char* names[] = {"Original", "Ecualizada", "Bilateral", "Contorno",
-                                  "Difusion (kernel propio)", "Posterizada", "Final"};
+                                  "Tono limpio (kernel propio)", "Posterizada", "Final"};
     return (s >= 0 && s < ST_COUNT) ? names[s] : "?";
 }
 
@@ -104,32 +107,47 @@ inline cv::Mat makeInkKernel(int k) {
     return K;
 }
 
-// LUT de posterización (cuantización uniforme por canal, manipulación de píxeles):
-//   paso Δ = 256 / n,   q(v) = ⌊v/Δ⌋·Δ + Δ/2   -> n valores por canal
-inline cv::Mat makePosterLUT(int n) {
+// Paleta fija de serigrafía (BGR), ordenada de oscuro a claro por luminancia
+// Y = 0.299R + 0.587G + 0.114B, para que la imagen se siga "leyendo" igual:
+//   tinta, azul profundo, rojo, magenta, verde azulado, naranja, amarillo, crema
+inline const std::array<cv::Vec3b, 8>& popPalette() {
+    static const std::array<cv::Vec3b, 8> pal = {{
+        {40, 25, 20},    // Y≈ 27  tinta azul-negra
+        {140, 50, 30},   // Y≈ 54  azul profundo
+        {45, 35, 210},   // Y≈ 89  rojo intenso
+        {140, 60, 230},  // Y≈120  magenta
+        {170, 170, 40},  // Y≈131  verde azulado
+        {30, 120, 245},  // Y≈147  naranja
+        {40, 215, 250},  // Y≈205  amarillo
+        {215, 240, 250}, // Y≈236  crema (papel)
+    }};
+    return pal;
+}
+
+// LUT de posterización + paleta (cuantización y coloreado en un solo paso):
+//   nivel(v) = ⌊v·n/256⌋ ∈ {0..n-1}
+//   color(v) = paleta[ round(nivel·7/(n-1)) ]
+// Con n = 4: tinta, rojo, naranja, crema. Se eligen colores repartidos en la
+// paleta (siempre el más oscuro y el más claro) para máximo contraste.
+inline cv::Mat makePaletteLUT(int n) {
     n = std::clamp(n, 2, 8);
-    const double step = 256.0 / n;
-    cv::Mat lut(1, 256, CV_8UC1);
+    const auto& pal = popPalette();
+    cv::Mat lut(1, 256, CV_8UC3);
     for (int v = 0; v < 256; ++v) {
-        const int idx = std::min(n - 1, static_cast<int>(v / step));
-        lut.at<uchar>(0, v) = cv::saturate_cast<uchar>(idx * step + step / 2.0);
+        const int level = std::min(n - 1, v * n / 256);
+        const int idx = static_cast<int>(std::lround(level * 7.0 / (n - 1)));
+        lut.at<cv::Vec3b>(0, v) = pal[idx];
     }
     return lut;
 }
 
-// LUT HSV de 3 canales: H y V sin cambio; S con "zona muerta" + ganancia pop:
-//   S' = 0                       si S < s0   (los grises quedan neutros: sin halos
-//                                             de color por ruido en paredes/fondos)
-//   S' = min(255, (S - s0)·f')   si S ≥ s0,  con f' = factor·255/(255 - s0)
-inline cv::Mat makeSaturationLUT(double factor, int s0 = 28) {
-    cv::Mat lut(1, 256, CV_8UC3);
-    const double gain = factor * 255.0 / (255.0 - s0);
-    for (int v = 0; v < 256; ++v) {
-        const double s = (v < s0) ? 0.0 : (v - s0) * gain;
-        lut.at<cv::Vec3b>(0, v) = cv::Vec3b(static_cast<uchar>(v),
-                                            cv::saturate_cast<uchar>(s),
-                                            static_cast<uchar>(v));
-    }
+// LUT de niveles (1 canal): v -> nivel·255/(n-1). Imagen escalonada de las
+// manchas, usada para sacar el contorno entre tintas.
+inline cv::Mat makeLevelLUT(int n) {
+    n = std::clamp(n, 2, 8);
+    cv::Mat lut(1, 256, CV_8UC1);
+    for (int v = 0; v < 256; ++v)
+        lut.at<uchar>(0, v) = static_cast<uchar>(std::min(n - 1, v * n / 256) * 255 / (n - 1));
     return lut;
 }
 
@@ -161,37 +179,48 @@ public:
         //     w = Gs(||p-q||) * Gr(||I_p - I_q||)
         cv::bilateralFilter(eq_, bil_, makeOdd(prm.bilateralD), prm.bilateralSigma, prm.bilateralSigma);
 
-        // (3) Contornos: gris -> mediana (ruido impulsivo) -> Laplaciano (2da derivada)
-        //     ∇²I = ∂²I/∂x² + ∂²I/∂y²  -> |∇²I| > umbral = borde
+        // (3) Tono (luminancia) sobre el que trabaja el resto del pipeline
         cv::cvtColor(bil_, gray_, cv::COLOR_BGR2GRAY);
-        cv::medianBlur(gray_, med_, makeOdd(prm.medianK, 3));
-        cv::Laplacian(med_, lap16_, CV_16S, 3);
+
+        // (5) FILTRO PROPIO: difusión de tinta (kernel de Hann circular) sobre el tono
+        cv::filter2D(gray_, soft_, -1, kernel_, cv::Point(-1, -1), 0, cv::BORDER_REFLECT);
+
+        // (6) Limpieza fuerte ANTES de cuantizar, para manchas limpias sin "salpicaduras":
+        //     mediana: quita puntos aislados conservando el borde de las manchas;
+        //     apertura en gris (erosión→dilatación): borra manchitas CLARAS pequeñas;
+        //     cierre en gris (dilatación→erosión): borra manchitas OSCURAS pequeñas.
+        cv::medianBlur(soft_, toneTmp_, makeOdd(prm.medianK, 3));
+        cv::morphologyEx(toneTmp_, tone_, cv::MORPH_OPEN, seClean_);
+        cv::morphologyEx(tone_, toneTmp_, cv::MORPH_CLOSE, seClean_);
+        toneTmp_.copyTo(tone_);
+
+        // (7) Posterización: n niveles de tono. levels_ = nivel·255/(n-1) (gris
+        //     escalonado) sirve para el contorno; la paleta da el color final.
+        cv::LUT(tone_, levelLut_, levels_);
+
+        // (8) Contorno sobre las MANCHAS ya cuantizadas (no sobre la imagen con
+        //     detalle): el Laplaciano ∇²I = ∂²I/∂x² + ∂²I/∂y² solo responde donde
+        //     cambia la tinta, así no aparecen salpicaduras de textura.
+        //     |∇²I| > umbral = borde entre dos tintas.
+        cv::Laplacian(levels_, lap16_, CV_16S, 3);
         cv::convertScaleAbs(lap16_, lapAbs_);
         cv::threshold(lapAbs_, edgesRaw_, prm.edgeThresh, 255, cv::THRESH_BINARY);
 
-        // (4) Contorno morfológico:
-        //     cierre (dilatación→erosión) une primero los trazos cortados,
-        //     apertura (erosión→dilatación) borra luego los puntos sueltos,
+        //     Contorno morfológico:
+        //     cierre (dilatación→erosión) une los trazos cortados,
+        //     apertura (erosión→dilatación) borra los puntos sueltos,
         //     dilatación final engrosa la línea como tinta de serigrafía.
-        //     (En orden inverso la apertura borraría también las líneas finas.)
         cv::morphologyEx(edgesRaw_, edgesTmp_, cv::MORPH_CLOSE, seClose_);
         cv::morphologyEx(edgesTmp_, edgesRaw_, cv::MORPH_OPEN, seOpen_);
         cv::dilate(edgesRaw_, edges_, seDil_);
 
-        // (5) FILTRO PROPIO: difusión de tinta (kernel de Hann circular)
-        cv::filter2D(bil_, soft_, -1, kernel_, cv::Point(-1, -1), 0, cv::BORDER_REFLECT);
+        // (9) Paleta fija: una LUT de 3 canales hace cuantización + coloreado.
+        cv::cvtColor(tone_, tone3_, cv::COLOR_GRAY2BGR);
+        cv::LUT(tone3_, paletteLut_, poster_);
 
-        // (6a) Saturación pop: HSV, S' = min(255, S·factor) por LUT, de vuelta a BGR
-        cv::cvtColor(soft_, hsv_, cv::COLOR_BGR2HSV);
-        cv::LUT(hsv_, satLut_, hsvSat_);
-        cv::cvtColor(hsvSat_, vivid_, cv::COLOR_HSV2BGR);
-
-        // (6b) Posterización: cada canal B, G, R se cuantiza a n tintas
-        cv::LUT(vivid_, posterLut_, poster_);
-
-        // (6c) Pantalla de contorno: donde hay borde se imprime tinta casi negra
+        //     Pantalla de contorno: donde hay borde se imprime la tinta más oscura
         poster_.copyTo(out);
-        out.setTo(cv::Scalar(25, 20, 20), edges_);
+        out.setTo(cv::Scalar(popPalette()[0]), edges_);
     }
 
     // Devuelve (como BGR) la etapa pedida para visualizar pasos intermedios
@@ -201,7 +230,7 @@ public:
             case ST_ECUALIZADA:  eq_.copyTo(dst); return;
             case ST_BILATERAL:   bil_.copyTo(dst); return;
             case ST_BORDES:      cv::cvtColor(edges_, dst, cv::COLOR_GRAY2BGR); return;
-            case ST_DIFUSION:    soft_.copyTo(dst); return;
+            case ST_DIFUSION:    cv::cvtColor(tone_, dst, cv::COLOR_GRAY2BGR); return;
             case ST_POSTERIZADA: poster_.copyTo(dst); return;
             default:             finalOut.copyTo(dst); return;
         }
@@ -225,23 +254,24 @@ private:
             lastMorph_ = mk;
         }
         if (n != lastLevels_) {
-            makePosterLUT(n).copyTo(posterLut_);    // RAM -> (V)RAM una sola vez
+            makePaletteLUT(n).copyTo(paletteLut_);  // RAM -> (V)RAM una sola vez
+            makeLevelLUT(n).copyTo(levelLut_);
             lastLevels_ = n;
         }
-        if (prm.saturation != lastSat_) {
-            makeSaturationLUT(prm.saturation).copyTo(satLut_);
-            lastSat_ = prm.saturation;
+        const int ck = makeOdd(prm.cleanK, 3);
+        if (ck != lastClean_) {
+            seClean_ = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(ck, ck));
+            lastClean_ = ck;
         }
     }
 
-    cv::Mat kernel_, seOpen_, seClose_, seDil_;
-    M posterLut_, satLut_;
+    cv::Mat kernel_, seOpen_, seClose_, seDil_, seClean_;
+    M paletteLut_, levelLut_;
     std::vector<M> ch_;
-    M ycc_, yEq_, eq_, bil_, gray_, med_, lap16_, lapAbs_, edgesRaw_, edgesTmp_, edges_;
-    M soft_, hsv_, hsvSat_, vivid_, poster_;
+    M ycc_, yEq_, eq_, bil_, gray_, levels_, lap16_, lapAbs_, edgesRaw_, edgesTmp_, edges_;
+    M soft_, toneTmp_, tone_, tone3_, poster_;
 
-    int lastK_ = -1, lastMorph_ = -1, lastLevels_ = -1;
-    double lastSat_ = -1.0;
+    int lastK_ = -1, lastMorph_ = -1, lastLevels_ = -1, lastClean_ = -1;
 };
 
 } // namespace serigrafia
